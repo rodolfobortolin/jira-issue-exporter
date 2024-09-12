@@ -49,15 +49,25 @@ ALLOWED_CUSTOM_FIELD_TYPES = [
     "com.pyxis.greenhopper.jira:gh-sprint"
 ]
 
-# Create a lock for synchronizing access to the user cache
 file_lock = threading.Lock()
-
-# Set of issues that are currently being processed
 issues_in_progress = set()
+issue_id_map = {}
+current_issue_id = 1
+link_id_counter = 1
 
-# Function to load the user cache into memory to reduce file I/O operations
+def get_next_issue_id():
+    global current_issue_id
+    issue_id = current_issue_id
+    current_issue_id += 1
+    return issue_id
+
+def get_next_link_id():
+    global link_id_counter
+    link_id = link_id_counter
+    link_id_counter += 1
+    return link_id
+
 def load_user_cache():
-    """Load the user cache into memory to reduce file I/O operations."""
     user_cache = {}
     if os.path.exists(USER_CACHE_FILE):
         with file_lock:
@@ -70,36 +80,25 @@ def load_user_cache():
                         continue
     return user_cache
 
-# Function to save the user cache to a file
 def save_user_cache(user_cache):
-    """Write the entire user cache to the file to avoid frequent file writes."""
     with file_lock:
         with open(USER_CACHE_FILE, 'w') as file:
             for user_key, is_in_group in user_cache.items():
                 file.write(f"{user_key},{is_in_group}\n")
 
-# Safely cache the user group information
 def cache_user_group(user_key, in_exempted_groups, user_cache):
-    """Safely cache the user group information, ensuring the cache is updated only if necessary."""
     if user_key not in user_cache:
         user_cache[user_key] = str(in_exempted_groups)
         save_user_cache(user_cache)
 
-# Check if the user is in an exempted group, and cache the result
 def is_user_in_exempted_groups(user_key, user_cache):
-    """Check if a user is in an exempted group and cache the result."""
-    # First, check if the user is already cached
     if user_key in user_cache:
         return user_cache[user_key] == 'True'
-
-    # If not cached, fetch group membership and cache it
     in_exempted_groups = fetch_user_group_membership(user_key)
     cache_user_group(user_key, in_exempted_groups, user_cache)
     return in_exempted_groups
 
-# Function to fetch user group membership from Jira
 def fetch_user_group_membership(user_key):
-    """Fetch the group membership for a user from Jira."""
     url = f"{config['base_url']}/rest/api/2/user?accountId={user_key}&expand=groups"
     response = requests.get(url, auth=HTTPBasicAuth(config['email'], config['token']),
                             headers={"Accept": "application/json"})
@@ -110,9 +109,7 @@ def fetch_user_group_membership(user_key):
     groups = [group['name'] for group in user_data['groups']['items']]
     return any(group in EXEMPTED_GROUPS for group in groups)
 
-# Function to check if an issue is already processed
 def is_issue_processed(issue_key):
-    """Check if an issue has already been processed by reading from the cache file."""
     if os.path.exists(PROCESSED_ISSUES_CACHE):
         with open(PROCESSED_ISSUES_CACHE, 'r') as file:
             for line in file:
@@ -120,15 +117,11 @@ def is_issue_processed(issue_key):
                     return True
     return False
 
-# Function to mark an issue as processed
 def mark_issue_as_processed(issue_key):
-    """Mark an issue as processed by writing it to the cache file."""
     with open(PROCESSED_ISSUES_CACHE, 'a') as file:
         file.write(f"{issue_key}\n")
 
-# Function to format Jira datetime values
 def format_jira_datetime(value):
-    """Format the Jira datetime string into a more readable format."""
     try:
         date_obj = datetime.strptime(value, '%Y-%m-%dT%H:%M:%S.%f%z')
         return date_obj.strftime('%d/%b/%y %I:%M %p')
@@ -136,9 +129,7 @@ def format_jira_datetime(value):
         logging.error(f"Error formatting date: {e}")
         return value
 
-# Fetch a specific Jira issue by its key
 def fetch_issue_by_key(issue_key):
-    """Fetch a specific Jira issue by its key, including the changelog, comments, and issue links."""
     url = f"{config['base_url']}/rest/api/2/issue/{issue_key}"
     params = {
         'expand': 'changelog,comment,issuelinks'
@@ -150,9 +141,7 @@ def fetch_issue_by_key(issue_key):
         return None
     return response.json()
 
-# Fetch comments for a given issue
 def fetch_issue_comments(issue_key):
-    """Fetch comments for a specific issue."""
     url = f"{config['base_url']}/rest/api/2/issue/{issue_key}?fields=comment&expand=comment"
     response = requests.get(url, auth=HTTPBasicAuth(config['email'], config['token']),
                             headers={"Accept": "application/json"})
@@ -162,19 +151,14 @@ def fetch_issue_comments(issue_key):
     issue_data = response.json()
     return issue_data['fields']['comment']['comments'] if 'comment' in issue_data['fields'] else []
 
-# Handle user caching and fallback to a default author
 def handle_user(user_key, user_cache):
-    """Handle the user key and return a valid author or fallback to a default."""
     if is_user_in_exempted_groups(user_key, user_cache):
         return user_key
     return CUSTOM_COMMENT_AUTHOR
 
-# Map the details of a single issue and ensure linked issues are processed
-def map_issue_details(issue, custom_fields, mapped_issues, user_cache):
-    """Maps the details of a single issue and ensures linked issues are processed."""
+def map_issue_details(issue, custom_fields, mapped_issues, user_cache, issue_links):
     issue_key = issue['key']
 
-    # Check if the issue is already being processed or has been processed
     if issue_key in issues_in_progress:
         logging.info(f"Issue {issue_key} is already in progress. Skipping.")
         return None
@@ -182,11 +166,13 @@ def map_issue_details(issue, custom_fields, mapped_issues, user_cache):
         logging.info(f"Issue {issue_key} is already processed. Skipping.")
         return None
 
-    # Mark the issue as "in progress"
     issues_in_progress.add(issue_key)
+    issue_id = get_next_issue_id()
+    issue_id_map[issue_key] = issue_id
 
     mapped_issue = {
         "key": issue_key,
+        "externalId": str(issue_id),
         "priority": issue['fields']['priority']['name'] if issue['fields'].get('priority') else None,
         "description": issue['fields'].get('description', ''),
         "status": issue['fields']['status']['name'],
@@ -204,10 +190,11 @@ def map_issue_details(issue, custom_fields, mapped_issues, user_cache):
         "fixedVersions": [v['name'] for v in issue['fields'].get('fixVersions', [])],
         "components": [c['name'] for c in issue['fields'].get('components', [])],
         "customFieldValues": [],
-        "links": []  # To store linked issues
+        "attachments": [],
+        "comments": [],
+        "history": []
     }
 
-    # Process issue links
     if 'issuelinks' in issue['fields'] and issue['fields']['issuelinks']:
         for link in issue['fields']['issuelinks']:
             link_type = link['type']['name']
@@ -218,23 +205,25 @@ def map_issue_details(issue, custom_fields, mapped_issues, user_cache):
             else:
                 continue
 
-            # Add the linked issue to the current issue's links
-            mapped_issue['links'].append({
-                "linkType": link_type,
-                "linkedIssueKey": linked_issue_key
-            })
-
-            # Process the linked issue if it has not been processed
-            if not is_issue_processed(linked_issue_key) and linked_issue_key not in issues_in_progress:
-                logging.info(f"Processing linked issue: {linked_issue_key}")
-                linked_issue = fetch_issue_by_key(linked_issue_key)  # Fetch the full issue by key
+            if linked_issue_key not in issue_id_map:
+                linked_issue = fetch_issue_by_key(linked_issue_key)
                 if linked_issue:
-                    linked_mapped_issue = map_issue_details(linked_issue, custom_fields, mapped_issues, user_cache)  # Recursively process the linked issue
-                    if linked_mapped_issue:
-                        mapped_issues.append(linked_mapped_issue)  # Add the linked issue to the list of mapped issues
-                    mark_issue_as_processed(linked_issue_key)  # Mark the linked issue as processed
+                    map_issue_details(linked_issue, custom_fields, mapped_issues, user_cache, issue_links)
 
-    # Process custom fields
+            linked_issue_id = issue_id_map.get(linked_issue_key, None)
+            if linked_issue_id:
+                source_id, destination_id = (issue_id, linked_issue_id) if issue_id < linked_issue_id else (linked_issue_id, issue_id)
+
+                if any(l['sourceId'] == str(source_id) and l['destinationId'] == str(destination_id) for l in issue_links):
+                    logging.info(f"Link between {issue_key} and {linked_issue_key} already exists in the correct direction. Skipping.")
+                    continue
+
+                issue_links.append({
+                    "name": link_type,
+                    "sourceId": str(source_id),
+                    "destinationId": str(destination_id)
+                })
+
     for field_id, field_value in issue['fields'].items():
         if field_id.startswith("customfield_") and field_id in custom_fields and field_value:
             custom_field_info = custom_fields[field_id]
@@ -245,7 +234,6 @@ def map_issue_details(issue, custom_fields, mapped_issues, user_cache):
                 "value": value
             })
 
-    # Process attachments
     if 'attachment' in issue['fields'] and issue['fields']['attachment']:
         mapped_issue["attachments"] = [
             {
@@ -257,7 +245,6 @@ def map_issue_details(issue, custom_fields, mapped_issues, user_cache):
             } for a in issue['fields']['attachment']
         ]
 
-    # Process comments
     comments = fetch_issue_comments(issue['key'])
     if comments:
         mapped_issue["comments"] = [
@@ -268,7 +255,6 @@ def map_issue_details(issue, custom_fields, mapped_issues, user_cache):
             } for c in comments
         ]
 
-    # Process changelog
     if 'changelog' in issue and issue['changelog'].get('histories'):
         mapped_issue["history"] = [
             {
@@ -287,18 +273,12 @@ def map_issue_details(issue, custom_fields, mapped_issues, user_cache):
             } for h in issue['changelog']['histories']
         ]
 
-    # Mark the current issue as processed
     mark_issue_as_processed(issue_key)
-
-    # Remove the issue from the "in progress" set after processing
     issues_in_progress.remove(issue_key)
-
     logging.info(f"Issue {issue_key} mapped successfully.")
     return mapped_issue
 
-# Function to fetch all custom fields in Jira
 def fetch_custom_fields():
-    """Fetch all custom fields in Jira and filter by allowed types."""
     url = f"{config['base_url']}/rest/api/2/field"
     response = requests.get(url, auth=HTTPBasicAuth(config['email'], config['token']),
                             headers={"Accept": "application/json"})
@@ -313,14 +293,11 @@ def fetch_custom_fields():
     logging.info(f"{len(custom_fields)} custom fields found with allowed types.")
     return custom_fields
 
-# Fetch issues in parallel using ThreadPoolExecutor
 def fetch_issues(project_key):
-    """Fetch all issues in a given project by key, in parallel."""
     issues = []
     start_at = 0
     max_results = 100
     
-    # Fetch the first batch to determine the total number of issues
     url = f"{config['base_url']}/rest/api/2/search"
     params = {
         'jql': f'project={project_key} order by key desc',
@@ -341,7 +318,6 @@ def fetch_issues(project_key):
     
     logging.info(f"Fetched {len(issues)} of {total} issues (initial batch).")
 
-    # Define a function to fetch a batch of issues based on startAt parameter
     def fetch_issue_batch(start_at):
         params['startAt'] = start_at
         response = requests.get(url, auth=HTTPBasicAuth(config['email'], config['token']),
@@ -353,13 +329,11 @@ def fetch_issues(project_key):
         logging.info(f"Fetched {len(data['issues'])} issues starting at {start_at}.")
         return data['issues']
 
-    # Create thread pool for parallel fetching
     with ThreadPoolExecutor(max_workers=10) as executor:
         futures = []
         for start_at in range(max_results, total, max_results):
             futures.append(executor.submit(fetch_issue_batch, start_at))
 
-        # Append all fetched issues to the list
         for future in as_completed(futures):
             batch_issues = future.result()
             if batch_issues:
@@ -368,19 +342,18 @@ def fetch_issues(project_key):
     logging.info(f"Total issues fetched: {len(issues)} of {total}.")
     return issues
 
-# Map issues using multithreading for better performance
 def map_issues_in_parallel(issues, custom_fields, user_cache):
-    """Map issues using multithreading for better performance and ensure linked issues are processed."""
     mapped_issues = []
+    issue_links = []
 
     with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {executor.submit(map_issue_details, issue, custom_fields, mapped_issues, user_cache): issue for issue in issues}
+        futures = {executor.submit(map_issue_details, issue, custom_fields, mapped_issues, user_cache, issue_links): issue for issue in issues}
         for future in as_completed(futures):
             mapped_issue = future.result()
             if mapped_issue:
                 mapped_issues.append(mapped_issue)
 
-    return mapped_issues
+    return mapped_issues, issue_links
 
 def fetch_project_details(project_key):
     url = f"{config['base_url']}/rest/api/2/project/{project_key}"
@@ -396,7 +369,7 @@ def fetch_project_details(project_key):
 def calculate_size_in_bytes(data):
     return len(json.dumps(data).encode('utf-8'))
 
-def split_issues_into_batches(issues, max_size_bytes, project_details, custom_fields):
+def split_issues_into_batches(issues, max_size_bytes, project_details, custom_fields, issue_links):
     batches = []
     current_batch = []
     current_size = 0
@@ -409,11 +382,13 @@ def split_issues_into_batches(issues, max_size_bytes, project_details, custom_fi
                     {
                         "name": project_details['name'],
                         "key": project_details['key'],
+                        "type": project_details['projectTypeKey'],
                         "versions": project_details.get('versions', []),
                         "components": project_details.get('components', []),
                         "issues": current_batch
                     }
-                ]
+                ],
+                "links": issue_links
             })
             current_batch = []
             current_size = 0
@@ -426,11 +401,13 @@ def split_issues_into_batches(issues, max_size_bytes, project_details, custom_fi
                 {
                     "name": project_details['name'],
                     "key": project_details['key'],
+                    "type": project_details['projectTypeKey'],
                     "versions": project_details.get('versions', []),
                     "components": project_details.get('components', []),
                     "issues": current_batch
                 }
-            ]
+            ],
+            "links": issue_links
         })
 
     return batches
@@ -450,13 +427,11 @@ def export_jira_issues(project_key):
 
     logging.info(f"Total issues to export: {len(issues)}")
 
-    # Load the user cache into memory
     user_cache = load_user_cache()
 
-    # Process the issues in parallel
-    mapped_issues = map_issues_in_parallel(issues, custom_fields, user_cache)
+    mapped_issues, issue_links = map_issues_in_parallel(issues, custom_fields, user_cache)
     
-    batches = split_issues_into_batches(mapped_issues, MAX_FILE_SIZE_BYTES, project_details, custom_fields)
+    batches = split_issues_into_batches(mapped_issues, MAX_FILE_SIZE_BYTES, project_details, custom_fields, issue_links)
 
     for idx, batch in enumerate(batches, start=1):
         output_file = f"jira_export_{project_key}_batch_{idx}.json"

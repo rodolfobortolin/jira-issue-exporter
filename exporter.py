@@ -313,28 +313,59 @@ def fetch_custom_fields():
     logging.info(f"{len(custom_fields)} custom fields found with allowed types.")
     return custom_fields
 
-# Fetch all issues in a given project
+# Fetch issues in parallel using ThreadPoolExecutor
 def fetch_issues(project_key):
-    """Fetch all issues in a given project by key."""
+    """Fetch all issues in a given project by key, in parallel."""
     issues = []
     start_at = 0
     max_results = 100
-    total = 1
-    while start_at < total:
-        url = f"{config['base_url']}/rest/api/2/search"
-        params = {
-            'jql': f'project={project_key} order by key desc',
-            'startAt': start_at,
-            'maxResults': max_results,
-            'expand': 'changelog'
-        }
+    
+    # Fetch the first batch to determine the total number of issues
+    url = f"{config['base_url']}/rest/api/2/search"
+    params = {
+        'jql': f'project={project_key} order by key desc',
+        'startAt': start_at,
+        'maxResults': max_results,
+        'expand': 'changelog'
+    }
+    response = requests.get(url, auth=HTTPBasicAuth(config['email'], config['token']),
+                            headers={"Accept": "application/json"}, params=params)
+    
+    if response.status_code != 200:
+        logging.error(f"Error fetching issues: {response.status_code}")
+        return []
+    
+    data = response.json()
+    total = data['total']
+    issues.extend(data['issues'])
+    
+    logging.info(f"Fetched {len(issues)} of {total} issues (initial batch).")
+
+    # Define a function to fetch a batch of issues based on startAt parameter
+    def fetch_issue_batch(start_at):
+        params['startAt'] = start_at
         response = requests.get(url, auth=HTTPBasicAuth(config['email'], config['token']),
                                 headers={"Accept": "application/json"}, params=params)
+        if response.status_code != 200:
+            logging.error(f"Error fetching issues at startAt {start_at}: {response.status_code}")
+            return []
         data = response.json()
-        issues.extend(data['issues'])
-        total = data['total']
-        start_at += max_results
-        logging.info(f"Fetched {len(issues)} of {total} issues.")
+        logging.info(f"Fetched {len(data['issues'])} issues starting at {start_at}.")
+        return data['issues']
+
+    # Create thread pool for parallel fetching
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = []
+        for start_at in range(max_results, total, max_results):
+            futures.append(executor.submit(fetch_issue_batch, start_at))
+
+        # Append all fetched issues to the list
+        for future in as_completed(futures):
+            batch_issues = future.result()
+            if batch_issues:
+                issues.extend(batch_issues)
+
+    logging.info(f"Total issues fetched: {len(issues)} of {total}.")
     return issues
 
 # Map issues using multithreading for better performance

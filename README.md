@@ -8,11 +8,15 @@ This script is designed to export Jira issues from both **Jira Cloud** and **Jir
 ## Features
 
 - Supports both **Jira Cloud** and **Jira Data Center**.
-- Exports issues, custom fields, comments, attachments, and linked issues.
-- Automatically splits the export into multiple files if the file size exceeds 7 MB.
-- Handles user accounts and group membership using a local cache to avoid redundant API requests.
-- Maps linked issues using unique IDs rather than Jira issue keys.
-- Saves data in well-structured JSON format for easy processing.
+- The script exports all issue information (custom fields, attachments, links, comments, histories, versions, components).
+- The script maintains a cache of users that we do not want to anonymize.
+- The script keeps a cache of account IDs to avoid fetching them via REST every time (for both Data Center and Cloud).
+- The script creates issues in parallel, significantly reducing the export time.
+- The script manages which users can or cannot be exported to the JSON based on their groups: if they are not in group X, it assigns a default user; otherwise, it attempts to get the account ID of the user in Cloud to include in the JSON.
+- The script stores all processed issues (imported into the JSON) to prevent duplicate issues.
+- The script fetches all issues from the project in parallel, saving a lot of time.
+- Due to a limitation in Cloud imports, the script manages and avoids creating files larger than 7MB, breaking them into batches.
+- The script prioritizes linked issues immediately after detection to keep them in the same batch, preventing linked issues from being split and losing the link between them.
 
 ## Setup and Requirements
 

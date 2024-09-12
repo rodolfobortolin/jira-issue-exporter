@@ -382,10 +382,67 @@ def map_issues_in_parallel(issues, custom_fields, user_cache):
 
     return mapped_issues
 
-# Main function to export issues from Jira, including linked issues, to JSON files
+def fetch_project_details(project_key):
+    url = f"{config['base_url']}/rest/api/2/project/{project_key}"
+    response = requests.get(url, auth=HTTPBasicAuth(config['email'], config['token']),
+                            headers={"Accept": "application/json"})
+    if response.status_code != 200:
+        logging.error(f"Error fetching project details for {project_key}: {response.status_code}")
+        return None
+    project_data = response.json()
+    logging.info(f"Project details for {project_key} retrieved successfully.")
+    return project_data
+
+def calculate_size_in_bytes(data):
+    return len(json.dumps(data).encode('utf-8'))
+
+def split_issues_into_batches(issues, max_size_bytes, project_details, custom_fields):
+    batches = []
+    current_batch = []
+    current_size = 0
+
+    for issue in issues:
+        issue_size = calculate_size_in_bytes(issue)
+        if current_size + issue_size > max_size_bytes:
+            batches.append({
+                "projects": [
+                    {
+                        "name": project_details['name'],
+                        "key": project_details['key'],
+                        "versions": project_details.get('versions', []),
+                        "components": project_details.get('components', []),
+                        "issues": current_batch
+                    }
+                ]
+            })
+            current_batch = []
+            current_size = 0
+        current_batch.append(issue)
+        current_size += issue_size
+
+    if current_batch:
+        batches.append({
+            "projects": [
+                {
+                    "name": project_details['name'],
+                    "key": project_details['key'],
+                    "versions": project_details.get('versions', []),
+                    "components": project_details.get('components', []),
+                    "issues": current_batch
+                }
+            ]
+        })
+
+    return batches
+
 def export_jira_issues(project_key):
-    """Main function to export issues from Jira, including linked issues, to JSON files."""
+    project_details = fetch_project_details(project_key)
+    if not project_details:
+        logging.error(f"Could not retrieve project details for {project_key}. Exiting...")
+        return
+
     custom_fields = fetch_custom_fields()
+
     issues = fetch_issues(project_key)
     if not issues:
         logging.info("No issues found.")
@@ -398,13 +455,15 @@ def export_jira_issues(project_key):
 
     # Process the issues in parallel
     mapped_issues = map_issues_in_parallel(issues, custom_fields, user_cache)
+    
+    batches = split_issues_into_batches(mapped_issues, MAX_FILE_SIZE_BYTES, project_details, custom_fields)
 
-    # Output the results to a JSON file
-    output_file = f"jira_export_{project_key}.json"
-    with open(output_file, 'w', encoding='utf-8') as f:
-        json.dump(mapped_issues, f, ensure_ascii=False, indent=4)
+    for idx, batch in enumerate(batches, start=1):
+        output_file = f"jira_export_{project_key}_batch_{idx}.json"
+        with open(output_file, 'w', encoding='utf-8') as f:
+            json.dump(batch, f, ensure_ascii=False, indent=4)
 
-    logging.info(f"Export completed: {output_file}")
+        logging.info(f"File {output_file} created successfully with {len(batch['projects'][0]['issues'])} issues, size {calculate_size_in_bytes(batch)} bytes.")
 
 if __name__ == "__main__":
     export_jira_issues(PROJECT_KEY)

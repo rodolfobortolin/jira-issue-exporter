@@ -433,7 +433,7 @@ class JiraExporter:
 
         logging.info(f"Total issues to export: {len(issues)}")
 
-        with ThreadPoolExecutor(max_workers=1) as executor:
+        with ThreadPoolExecutor(max_workers=15) as executor:
             futures = [
                 executor.submit(self.map_issue_details, issue, custom_fields)
                 for issue in issues

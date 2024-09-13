@@ -1,142 +1,180 @@
 
-# Jira Issue Exporter with Linked Issues and Custom Fields
+# Jira Exporter Script
 
 ## Overview
 
-This script is designed to export Jira issues from both **Jira Cloud** and **Jira Data Center**. It handles large exports by splitting them into files that are less than 7 MB in size, making it ideal for exporting large Jira projects. The script also manages user data, custom fields, comments, attachments, and linked issues using unique IDs.
+This script is designed to export issues from a specified Jira project, handling both Jira Cloud and Jira Data Center versions. It interacts with the Jira API to fetch issues, users, custom fields, and other related data, and then exports this information into JSON files suitable for migration or backup purposes.
 
 ## Features
 
-- Supports both **Jira Cloud** and **Jira Data Center**.
-- The script exports all issue information (custom fields, attachments, links, comments, histories, versions, components).
-- The script maintains a cache of users that we do not want to anonymize.
-- The script keeps a cache of account IDs to avoid fetching them via REST every time (for both Data Center and Cloud).
-- The script creates issues in parallel, significantly reducing the export time.
-- The script manages which users can or cannot be exported to the JSON based on their groups: if they are not in group X, it assigns a default user; otherwise, it attempts to get the account ID of the user in Cloud to include in the JSON.
-- The script stores all processed issues (imported into the JSON) to prevent duplicate issues.
-- The script fetches all issues from the project in parallel, saving a lot of time.
-- Due to a limitation in Cloud imports, the script manages and avoids creating files larger than 7MB, breaking them into batches.
-- The script prioritizes linked issues immediately after detection to keep them in the same batch, preventing linked issues from being split and losing the link between them.
+- **Supports Both Jira Versions**: Choose between Jira Cloud and Jira Data Center during runtime.
+- **Authentication Handling**: Supports both token-based and basic authentication.
+- **User Data Management**:
+  - Caches user data to avoid redundant API calls.
+  - Handles user privacy by replacing non-exempted users with a custom user ID.
+- **Custom Fields Support**:
+  - Fetches and processes allowed custom fields.
+  - Handles various custom field types, including text, date, user pickers, etc.
+- **Issue Linking**:
+  - Processes issue links and ensures linked issues are also exported.
+- **Attachments and Comments**:
+  - Exports attachments with metadata.
+  - Includes comments with author handling.
+- **History Export**:
+  - Captures the change history of issues.
+- **Batch Exporting**:
+  - Splits the export into multiple JSON files if the data exceeds a specified size limit.
+- **Threaded Processing**:
+  - Utilizes threading to process multiple issues concurrently.
 
-## Setup and Requirements
+## Setup
 
-1. Python 3.x
-2. Install dependencies:
-    ```bash
-    pip install requests
-    ```
+### Prerequisites
 
-3. Make sure you configure Jira credentials for **Jira Cloud** or **Jira Data Center** in the script.
+- Python 3.6 or higher.
+- Required Python packages:
+  - `requests`
+  - `logging`
+  - `json`
+  - `threading`
+  - `concurrent.futures`
 
-## How to Use
+Install the required packages using:
 
-1. Clone the repository:
-    ```bash
-    git clone https://github.com/yourusername/jira-issue-exporter.git
-    ```
+```bash
+pip install requests
+```
 
-2. Run the script:
-    ```bash
-    python export_jira_issues.py
-    ```
+### Configuration
 
-3. You will be prompted to choose between **Jira Cloud** or **Jira Data Center** and to enter the Jira project key you want to export.
+#### Jira Cloud Configuration
 
-4. The script will export the issues and split them into JSON files named `jira_export_<project_key>_batch_<index>.json`.
+Update the `cloud_config` dictionary in the `main` function with your Jira Cloud credentials:
 
-## Configuration
-
-### Jira Cloud Configuration
-
-In the script, set your **email**, **API token**, and **base URL** for Jira Cloud:
 ```python
 cloud_config = {
-    'email': 'your_email@domain.com',
-    'token': 'your_api_token',
-    'base_url': 'https://yourdomain.atlassian.net',
+    'email': 'your-email@example.com',
+    'token': 'your-api-token',
+    'base_url': "https://your-domain.atlassian.net",
+    'auth_type': 'token'
 }
 ```
 
-### Jira Data Center Configuration
+- **email**: Your Jira Cloud account email.
+- **token**: Your Jira API token. [Get an API token](https://confluence.atlassian.com/cloud/api-tokens-938839638.html).
+- **base_url**: Your Jira Cloud base URL.
+- **auth_type**: Set to `'token'` for Jira Cloud.
 
-For Jira Data Center, set your **username**, **password**, and **base URL**:
+#### Jira Data Center Configuration
+
+Update the `config` dictionary with your Jira Data Center credentials if you select Jira Data Center:
+
 ```python
 config = {
-    'username': 'admin', 
-    'password': 'admin',  
-    'base_url': 'http://localhost:8080',
+    'username': 'your-username',
+    'password': 'your-password',
+    'base_url': "http://your-jira-instance.com",
     'auth_type': 'basic'
 }
 ```
 
-## Key Functionalities
+- **username**: Your Jira Data Center username.
+- **password**: Your Jira Data Center password.
+- **base_url**: Your Jira Data Center base URL.
+- **auth_type**: Set to `'basic'` for Jira Data Center.
 
-### Exporting Issues
+## Usage
 
-The script fetches issues, their details (including custom fields, comments, attachments, and linked issues), and splits the data into multiple JSON files if the total size exceeds the defined limit (7 MB).
+1. **Run the Script**:
 
-### Linked Issues
+   ```bash
+   python your_script_name.py
+   ```
 
-Linked issues are mapped using unique IDs, rather than Jira issue keys. The script ensures that each link between issues is included in the export, even when those issues are in separate files.
+2. **Select Jira Version**:
 
-### Custom Fields
+   When prompted, select:
 
-The script processes custom fields and includes them in the exported data. It supports various custom field types, including text, date, user picker, and others.
+   - `1` for Jira Cloud
+   - `2` for Jira Data Center
 
-### User Management
+3. **Enter Project Key**:
 
-The script manages user data (such as group membership) and stores this information in a local cache to avoid repeated API calls for the same users. It checks if users belong to specific groups and maps their data accordingly.
+   Input the key of the Jira project you wish to export.
 
-## File Structure
+## Output
 
-- **`users_cache.txt`**: Caches user group information to minimize API calls.
-- **`users_accounts.txt`**: Stores user email-to-account ID mappings.
-- **`processed_issues_cache.txt`**: Tracks which issues have already been processed.
+- The script will generate one or more JSON files named in the format:
+
+  ```
+  jira_export_{PROJECT_KEY}_batch_{BATCH_NUMBER}.json
+  ```
+
+- Each file contains:
+
+  - Project details.
+  - Issues with all related data (attachments, comments, history, custom fields).
+  - Issue links.
+
+## Customization
+
+- **Max File Size**:
+
+  Adjust the `MAX_FILE_SIZE_MB` constant in the `JiraExporter` class to change the maximum size of each output file.
+
+  ```python
+  MAX_FILE_SIZE_MB = 7  # Default is 7 MB
+  ```
+
+- **Exempted Groups**:
+
+  Modify the `EXEMPTED_GROUPS` list to include any user groups whose members should not be anonymized.
+
+  ```python
+  EXEMPTED_GROUPS = ["jira-administrators", "your-custom-group"]
+  ```
+
+- **Allowed Custom Field Types**:
+
+  Update the `ALLOWED_CUSTOM_FIELD_TYPES` list to control which custom field types are processed.
+
+## Caching
+
+- **User Cache**:
+
+  - Stored in `users_cache.txt`.
+  - Keeps track of users and whether they belong to exempted groups.
+
+- **User Accounts**:
+
+  - Stored in `users_accounts.txt`.
+  - Maps user emails to account IDs (used when mapping users from Data Center to Cloud).
+
+- **Processed Issues Cache**:
+
+  - Stored in `processed_issues_cache.txt`.
+  - Keeps track of issues that have already been processed to avoid duplication.
+
+## Thread Safety
+
+- The script uses threading locks when reading from or writing to cache files to ensure thread safety.
+
+## Error Handling
+
+- The script logs errors encountered during API calls and data processing.
+- If an error occurs while formatting dates or fetching data, it logs the error and continues processing.
 
 ## Logging
 
-The script logs its operations, including any errors encountered while fetching data, to the console for easy debugging and monitoring.
+- Logs are printed to the console with timestamps and log levels.
+- You can adjust the logging level by modifying the `basicConfig` call:
 
-## Example Output
+  ```python
+  logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s: %(message)s')
+  ```
 
-Once the script completes, it will generate JSON files, such as:
+## Limitations
 
-```json
-{
-    "projects": [
-        {
-            "name": "My Project",
-            "key": "MYPROJ",
-            "type": "software",
-            "issues": [
-                {
-                    "key": "MYPROJ-1",
-                    "summary": "Issue Summary",
-                    "description": "Issue Description",
-                    "priority": "High",
-                    "customFieldValues": [
-                        {
-                            "fieldName": "My Custom Field",
-                            "value": "Some value"
-                        }
-                    ],
-                    "comments": [
-                        {
-                            "body": "This is a comment",
-                            "author": "user@example.com",
-                            "created": "2024-09-12T12:34:56.789+0000"
-                        }
-                    ]
-                }
-            ]
-        }
-    ],
-    "links": [
-        {
-            "name": "Blocks",
-            "sourceId": "1",
-            "destinationId": "2"
-        }
-    ]
-}
-```
+- **Attachments**: The script only stores the URI of attachments, not the actual files.
+- **API Rate Limits**: Be mindful of Jira API rate limits, especially for large projects.
+- **User Privacy**: Users not in exempted groups are replaced with a custom user ID to maintain privacy.
